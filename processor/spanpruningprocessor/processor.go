@@ -13,6 +13,9 @@ import (
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 	"go.opentelemetry.io/collector/processor"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/sdk/resource"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 
@@ -407,4 +410,83 @@ func (p *spanPruningProcessor) analyzeAggregationsWithTree(ctx context.Context, 
 	}
 
 	return aggregationGroups
+}
+
+func (p *spanPruningProcessor) processSpans(ctx context.Context, td []sdktrace.ReadOnlySpan) (error, []sdktrace.ReadOnlySpan) {
+	start := time.Now()
+
+	p.telemetryBuilder.ProcessorSpanpruningSpansReceived.Add(ctx, int64(len(td)))
+
+	// Group spans by TraceID
+	traceSpans := p.groupReadOnlySpansByTraceID(td)
+
+	// Process each trace independently
+	tracesProcessed := int64(0)
+	for _, spans := range traceSpans {
+		// This modifies spans in-place.
+		if err := p.processTrace(ctx, spans); err != nil {
+			return err, nil
+		}
+		tracesProcessed++
+	}
+
+	// Record telemetry only when actual work was done
+	if tracesProcessed > 0 {
+		p.telemetryBuilder.ProcessorSpanpruningTracesProcessed.Add(ctx, tracesProcessed)
+		p.telemetryBuilder.ProcessorSpanpruningProcessingDuration.Record(ctx,
+			time.Since(start).Seconds())
+	}
+
+	// Convert aggregated spans back to ReadOnlySpan
+
+	return nil
+}
+
+// Kinda hacking this - convert the ReadOnlySpans that come in to a SpanProcessor
+// into the ptrace Spans that the Collector processor can handle.
+func (p *spanPruningProcessor) groupReadOnlySpansByTraceID(rss []sdktrace.ReadOnlySpan) map[pcommon.TraceID][]spanInfo {
+
+	// First, split the spans by resource and scope.
+	byResource := map[attribute.Distinct]struct {
+		res *resource.Resource
+		rs  ptrace.ResourceSpans
+		ss  map[string]ptrace.ScopeSpans
+	}{}
+
+	td := ptrace.NewTraces()
+
+	for _, rs := range rss {
+		resourceKey := rs.Resource().Equivalent()
+		rsk := byResource[resourceKey]
+		if rsk.res == nil {
+			rsk.res = rs.Resource()
+			rsk.rs = td.ResourceSpans().AppendEmpty()
+		}
+		scopeKey := rs.InstrumentationScope().Name
+		ss, found := rsk.ss[scopeKey]
+		if !found {
+			ss = rsk.rs.ScopeSpans().AppendEmpty()
+			rsk.ss[scopeKey] = ss
+		}
+		span := ss.Spans().AppendEmpty()
+		roSpanToPtraceSpan(rs, span)
+	}
+
+	return p.groupSpansByTraceID(td)
+}
+
+func roSpanToPtraceSpan(rs sdktrace.ReadOnlySpan, span ptrace.Span) {
+	span.SetName(rs.Name())
+	span.SetTraceID(pcommon.TraceID(rs.SpanContext().TraceID()))
+	span.SetSpanID(pcommon.SpanID(rs.SpanContext().SpanID()))
+	span.SetParentSpanID(pcommon.SpanID(rs.Parent().SpanID()))
+	span.SetKind(ptrace.SpanKind(rs.SpanKind()))
+	span.SetStartTimestamp(pcommon.NewTimestampFromTime(rs.StartTime()))
+	span.SetEndTimestamp(pcommon.NewTimestampFromTime(rs.EndTime()))
+	for _, kv := range rs.Attributes() {
+		span.Attributes().PutStr(string(kv.Key), kv.Value.AsString())
+	}
+	//	Links() []Link
+	//	Events() []Event
+	span.Status().SetCode(ptrace.StatusCode(rs.Status().Code))
 }
