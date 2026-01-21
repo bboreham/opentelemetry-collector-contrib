@@ -434,6 +434,9 @@ func (p *spanPruningProcessor) processSpans(ctx context.Context, roSpans []sdktr
 	ret := make([]sdktrace.ReadOnlySpan, 0, len(roSpans))
 	for _, spans := range traceSpans {
 		for _, info := range spans {
+			if info.span.Name() == "" { // Skip over pruned spans.  FIXME go via scopespans?
+				continue
+			}
 			rs := spanInfoToReadOnlySpan(info)
 			ret = append(ret, rs)
 		}
@@ -466,6 +469,7 @@ func (p *spanPruningProcessor) groupReadOnlySpansByTraceID(rss []sdktrace.ReadOn
 		if rsk.res == nil {
 			rsk.res = rs.Resource()
 			rsk.rs = td.ResourceSpans().AppendEmpty()
+			rsk.ss = make(map[string]ptrace.ScopeSpans)
 		}
 		scopeKey := rs.InstrumentationScope().Name
 		ss, found := rsk.ss[scopeKey]

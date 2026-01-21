@@ -87,7 +87,7 @@ type batchSpanProcessor struct {
 
 var _ trace.SpanProcessor = (*batchSpanProcessor)(nil)
 
-func NewBatchSpanProcessor(exporter trace.SpanExporter, options ...BatchSpanProcessorOption) trace.SpanProcessor {
+func NewBatchSpanProcessor(exporter trace.SpanExporter, groupByAttributes []string, options ...BatchSpanProcessorOption) trace.SpanProcessor {
 	maxQueueSize := DefaultMaxQueueSize
 	maxExportBatchSize := DefaultMaxExportBatchSize
 
@@ -107,7 +107,7 @@ func NewBatchSpanProcessor(exporter trace.SpanExporter, options ...BatchSpanProc
 
 	// Dummy set-up copied from test code
 	cfg := &Config{
-		GroupByAttributes:          []string{"db.operation"},
+		GroupByAttributes:          groupByAttributes,
 		MinSpansToAggregate:        2,
 		AggregationAttributePrefix: "aggregation.",
 		AggregationHistogramBuckets: []time.Duration{
@@ -267,7 +267,7 @@ func (bsp *batchSpanProcessor) exportSpans(ctx context.Context) error {
 	if l := len(bsp.batch); l > 0 {
 		//global.Debug("exporting spans", "count", len(bsp.batch), "total_dropped", atomic.LoadUint32(&bsp.dropped))
 		spans, err := bsp.s.processSpans(ctx, bsp.batch)
-		if err != nil {
+		if err == nil {
 			err = bsp.e.ExportSpans(ctx, spans)
 		}
 
