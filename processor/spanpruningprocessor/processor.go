@@ -470,11 +470,20 @@ func (p *spanPruningProcessor) groupReadOnlySpansByTraceID(rss []sdktrace.ReadOn
 			rsk.res = rs.Resource()
 			rsk.rs = td.ResourceSpans().AppendEmpty()
 			rsk.ss = make(map[string]ptrace.ScopeSpans)
+			byResource[resourceKey] = rsk
 		}
 		scopeKey := rs.InstrumentationScope().Name
 		ss, found := rsk.ss[scopeKey]
 		if !found {
 			ss = rsk.rs.ScopeSpans().AppendEmpty()
+			ss.Scope().SetName(rs.InstrumentationScope().Name)
+			ss.Scope().SetVersion(rs.InstrumentationScope().Version)
+			attrs := rs.InstrumentationScope().Attributes
+			iter := attrs.Iter()
+			for iter.Next() {
+				kv := iter.Attribute()
+				ss.Scope().Attributes().PutStr(string(kv.Key), kv.Value.AsString())
+			}
 			rsk.ss[scopeKey] = ss
 		}
 		span := ss.Spans().AppendEmpty()
