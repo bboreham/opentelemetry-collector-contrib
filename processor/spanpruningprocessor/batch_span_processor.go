@@ -11,8 +11,13 @@ import (
 	"time"
 
 	"github.com/open-telemetry/opentelemetry-collector-contrib/processor/spanpruningprocessor/internal/metadata"
+	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/processor/processortest"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/sdk/instrumentation"
+	"go.opentelemetry.io/otel/sdk/resource"
 	"go.opentelemetry.io/otel/sdk/trace"
 	ottrace "go.opentelemetry.io/otel/trace"
 )
@@ -261,9 +266,9 @@ func (bsp *batchSpanProcessor) exportSpans(ctx context.Context) error {
 
 	if l := len(bsp.batch); l > 0 {
 		//global.Debug("exporting spans", "count", len(bsp.batch), "total_dropped", atomic.LoadUint32(&bsp.dropped))
-		err := bsp.s.processSpans(ctx, bsp.batch)
+		spans, err := bsp.s.processSpans(ctx, bsp.batch)
 		if err != nil {
-			err = bsp.e.ExportSpans(ctx, bsp.batch)
+			err = bsp.e.ExportSpans(ctx, spans)
 		}
 
 		// A new batch is always created after exporting, even if the batch failed to be exported.
@@ -400,5 +405,97 @@ func (bsp *batchSpanProcessor) MarshalLog() any {
 		Type:         "BatchSpanProcessor",
 		SpanExporter: bsp.e,
 		Config:       bsp.o,
+	}
+}
+
+func spanInfoToReadOnlySpan(info spanInfo) trace.ReadOnlySpan {
+	return spanWrapper{spanInfo: info}
+}
+
+type spanWrapper struct {
+	spanInfo
+	trace.ReadOnlySpan // Only here to stop complaining about the private member.
+}
+
+func (s spanWrapper) Attributes() []attribute.KeyValue {
+	return pcommonMapToKeyValues(s.span.Attributes())
+}
+
+func (s spanWrapper) Events() []trace.Event {
+	ret := []trace.Event{}
+	for _, e := range s.span.Events().All() {
+		ret = append(ret, trace.Event{
+			Name:       e.Name(),
+			Attributes: pcommonMapToKeyValues(e.Attributes()),
+			Time:       e.Timestamp().AsTime(),
+		})
+	}
+	return ret
+}
+func (s spanWrapper) Name() string { return s.span.Name() }
+func (s spanWrapper) SpanContext() ottrace.SpanContext {
+	return ottrace.NewSpanContext(ottrace.SpanContextConfig{
+		TraceID:    ottrace.TraceID(s.span.TraceID()),
+		SpanID:     ottrace.SpanID(s.span.SpanID()),
+		TraceFlags: ottrace.TraceFlags(s.span.Flags()),
+	})
+}
+func (s spanWrapper) Parent() ottrace.SpanContext {
+	return ottrace.NewSpanContext(ottrace.SpanContextConfig{
+		TraceID:    ottrace.TraceID(s.span.TraceID()),
+		SpanID:     ottrace.SpanID(s.span.ParentSpanID()),
+		TraceFlags: ottrace.TraceFlags(s.span.Flags()),
+	})
+}
+func (s spanWrapper) SpanKind() ottrace.SpanKind { return ottrace.SpanKind(s.span.Kind()) }
+func (s spanWrapper) Status() trace.Status {
+	return trace.Status{Code: codes.Code(s.span.Status().Code())}
+}
+func (s spanWrapper) Links() []trace.Link          { return nil } // FIXME
+func (s spanWrapper) ChildSpanCount() int          { return 0 }   // FIXME
+func (s spanWrapper) DroppedAttributes() int       { return 0 }
+func (s spanWrapper) DroppedLinks() int            { return 0 }
+func (s spanWrapper) DroppedEvents() int           { return 0 }
+func (s spanWrapper) StartTime() time.Time         { return s.span.StartTimestamp().AsTime() }
+func (s spanWrapper) EndTime() time.Time           { return s.span.EndTimestamp().AsTime() }
+func (s spanWrapper) Resource() *resource.Resource { return nil } //FIXME
+func (s spanWrapper) InstrumentationScope() instrumentation.Scope {
+	return instrumentation.Scope{
+		Name:       s.scopeSpans.Scope().Name(),
+		Version:    s.scopeSpans.Scope().Version(),
+		Attributes: *attribute.EmptySet(), // TODO
+	}
+}
+func (s spanWrapper) InstrumentationLibrary() instrumentation.Library {
+	return s.InstrumentationScope()
+}
+
+func pcommonMapToKeyValues(a pcommon.Map) []attribute.KeyValue {
+	ret := []attribute.KeyValue{}
+	for k, v := range a.All() {
+		ret = append(ret, attribute.KeyValue{Key: attribute.Key(k), Value: pcommonValueToAttributeValue(v)})
+	}
+	return ret
+
+}
+
+func pcommonValueToAttributeValue(v pcommon.Value) attribute.Value {
+	switch v.Type() {
+	case pcommon.ValueTypeStr:
+		return attribute.StringValue(v.Str())
+	case pcommon.ValueTypeBool:
+		return attribute.BoolValue(v.Bool())
+	case pcommon.ValueTypeInt:
+		return attribute.Int64Value(v.Int())
+	case pcommon.ValueTypeDouble:
+		return attribute.Float64Value(v.Double())
+	case pcommon.ValueTypeSlice:
+		var vals []string // Only string slice supported.  TODO: Better error detection.
+		for _, s := range v.Slice().All() {
+			vals = append(vals, s.Str())
+		}
+		return attribute.StringSliceValue(vals)
+	default:
+		return attribute.Value{}
 	}
 }

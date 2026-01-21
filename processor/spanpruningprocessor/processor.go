@@ -412,24 +412,32 @@ func (p *spanPruningProcessor) analyzeAggregationsWithTree(ctx context.Context, 
 	return aggregationGroups
 }
 
-func (p *spanPruningProcessor) processSpans(ctx context.Context, td []sdktrace.ReadOnlySpan) (error, []sdktrace.ReadOnlySpan) {
+func (p *spanPruningProcessor) processSpans(ctx context.Context, roSpans []sdktrace.ReadOnlySpan) ([]sdktrace.ReadOnlySpan, error) {
 	start := time.Now()
 
-	p.telemetryBuilder.ProcessorSpanpruningSpansReceived.Add(ctx, int64(len(td)))
+	p.telemetryBuilder.ProcessorSpanpruningSpansReceived.Add(ctx, int64(len(roSpans)))
 
 	// Group spans by TraceID
-	traceSpans := p.groupReadOnlySpansByTraceID(td)
+	traceSpans := p.groupReadOnlySpansByTraceID(roSpans)
 
 	// Process each trace independently
 	tracesProcessed := int64(0)
 	for _, spans := range traceSpans {
 		// This modifies spans in-place.
 		if err := p.processTrace(ctx, spans); err != nil {
-			return err, nil
+			return nil, err
 		}
 		tracesProcessed++
 	}
 
+	// Convert aggregated spans back to ReadOnlySpan
+	ret := make([]sdktrace.ReadOnlySpan, 0, len(roSpans))
+	for _, spans := range traceSpans {
+		for _, info := range spans {
+			rs := spanInfoToReadOnlySpan(info)
+			ret = append(ret, rs)
+		}
+	}
 	// Record telemetry only when actual work was done
 	if tracesProcessed > 0 {
 		p.telemetryBuilder.ProcessorSpanpruningTracesProcessed.Add(ctx, tracesProcessed)
@@ -437,15 +445,12 @@ func (p *spanPruningProcessor) processSpans(ctx context.Context, td []sdktrace.R
 			time.Since(start).Seconds())
 	}
 
-	// Convert aggregated spans back to ReadOnlySpan
-
-	return nil
+	return ret, nil
 }
 
 // Kinda hacking this - convert the ReadOnlySpans that come in to a SpanProcessor
 // into the ptrace Spans that the Collector processor can handle.
 func (p *spanPruningProcessor) groupReadOnlySpansByTraceID(rss []sdktrace.ReadOnlySpan) map[pcommon.TraceID][]spanInfo {
-
 	// First, split the spans by resource and scope.
 	byResource := map[attribute.Distinct]struct {
 		res *resource.Resource
