@@ -12,6 +12,7 @@ import (
 
 	"github.com/open-telemetry/opentelemetry-collector-contrib/processor/spanpruningprocessor/internal/metadata"
 	"go.opentelemetry.io/collector/pdata/pcommon"
+	"go.opentelemetry.io/collector/pdata/ptrace"
 	"go.opentelemetry.io/collector/processor/processortest"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -105,16 +106,11 @@ func NewBatchSpanProcessor(exporter trace.SpanExporter, groupByAttributes []stri
 		opt(&o)
 	}
 
-	// Dummy set-up copied from test code
 	cfg := &Config{
+		MaxParentDepth:             -1,
 		GroupByAttributes:          groupByAttributes,
 		MinSpansToAggregate:        2,
-		AggregationAttributePrefix: "aggregation.",
-		AggregationHistogramBuckets: []time.Duration{
-			10 * time.Millisecond,
-			50 * time.Millisecond,
-			100 * time.Millisecond,
-		},
+		AggregationAttributePrefix: "agg.",
 	}
 
 	set := processortest.NewNopSettings(metadata.Type)
