@@ -408,12 +408,9 @@ func (bsp *batchSpanProcessor) MarshalLog() any {
 	}
 }
 
-func spanInfoToReadOnlySpan(info spanInfo) trace.ReadOnlySpan {
-	return spanWrapper{spanInfo: info}
-}
-
 type spanWrapper struct {
-	spanInfo
+	span               ptrace.Span
+	scopeSpans         ptrace.ScopeSpans
 	trace.ReadOnlySpan // Only here to stop complaining about the private member.
 }
 

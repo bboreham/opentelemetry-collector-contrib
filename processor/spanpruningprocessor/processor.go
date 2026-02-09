@@ -418,26 +418,21 @@ func (p *spanPruningProcessor) processSpans(ctx context.Context, roSpans []sdktr
 	p.telemetryBuilder.ProcessorSpanpruningSpansReceived.Add(ctx, int64(len(roSpans)))
 
 	// Group spans by TraceID
-	traceSpans := p.groupReadOnlySpansByTraceID(roSpans)
+	traceSpans, allScopeSpans := p.groupReadOnlySpansByTraceID(roSpans)
 
 	// Process each trace independently
 	tracesProcessed := int64(0)
 	for _, spans := range traceSpans {
 		// This modifies spans in-place.
-		if err := p.processTrace(ctx, spans); err != nil {
-			return nil, err
-		}
+		p.processTrace(ctx, spans)
 		tracesProcessed++
 	}
 
 	// Convert aggregated spans back to ReadOnlySpan
 	ret := make([]sdktrace.ReadOnlySpan, 0, len(roSpans))
-	for _, spans := range traceSpans {
-		for _, info := range spans {
-			if info.span.Name() == "" { // Skip over pruned spans.  FIXME go via scopespans?
-				continue
-			}
-			rs := spanInfoToReadOnlySpan(info)
+	for _, scopeSpans := range allScopeSpans {
+		for _, span := range scopeSpans.Spans().All() {
+			rs := spanWrapper{span: span, scopeSpans: scopeSpans}
 			ret = append(ret, rs)
 		}
 	}
@@ -453,13 +448,14 @@ func (p *spanPruningProcessor) processSpans(ctx context.Context, roSpans []sdktr
 
 // Kinda hacking this - convert the ReadOnlySpans that come in to a SpanProcessor
 // into the ptrace Spans that the Collector processor can handle.
-func (p *spanPruningProcessor) groupReadOnlySpansByTraceID(rss []sdktrace.ReadOnlySpan) map[pcommon.TraceID][]spanInfo {
+func (p *spanPruningProcessor) groupReadOnlySpansByTraceID(rss []sdktrace.ReadOnlySpan) (map[pcommon.TraceID][]spanInfo, []ptrace.ScopeSpans) {
 	// First, split the spans by resource and scope.
 	byResource := map[attribute.Distinct]struct {
 		res *resource.Resource
 		rs  ptrace.ResourceSpans
 		ss  map[string]ptrace.ScopeSpans
 	}{}
+	var allScopeSpans []ptrace.ScopeSpans
 
 	td := ptrace.NewTraces()
 
@@ -485,12 +481,13 @@ func (p *spanPruningProcessor) groupReadOnlySpansByTraceID(rss []sdktrace.ReadOn
 				ss.Scope().Attributes().PutStr(string(kv.Key), kv.Value.AsString())
 			}
 			rsk.ss[scopeKey] = ss
+			allScopeSpans = append(allScopeSpans, ss)
 		}
 		span := ss.Spans().AppendEmpty()
 		roSpanToPtraceSpan(rs, span)
 	}
 
-	return p.groupSpansByTraceID(td)
+	return p.groupSpansByTraceID(td), allScopeSpans
 }
 
 func roSpanToPtraceSpan(rs sdktrace.ReadOnlySpan, span ptrace.Span) {
